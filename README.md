@@ -61,7 +61,6 @@ Sessions last about 8 hours; re-run `pi-kb-mcp login` when a tool tells you to.
 | `PI_KB_MCP_SECRET` | Mode B only. Shared secret gating the HTTP server; 24 characters minimum. |
 | `PI_KB_MCP_COOKIES` | Mode B only. Where pushed portal cookies are stored. |
 | `PI_KB_BIND` | Mode B only. Host bind, if you uncomment the `ports` section. Unused by default. |
-| `PI_KB_PROXY_NETWORK` | Mode B only. Name of the Docker network your reverse proxy runs on. |
 
 ## Phone access (optional, private)
 
