@@ -2,7 +2,7 @@
 #
 # Deploy in Portainer:  Stacks -> Add stack -> Repository
 #   Repository URL:     https://github.com/nurnaufal321/pi-kb-mcp
-#   Compose path:       compose.yaml
+#   Compose path:       docker-compose.yml   (Portainer's default)
 #   Environment:        PI_KB_MCP_SECRET = <a long random string>
 #
 # Generate the secret with:

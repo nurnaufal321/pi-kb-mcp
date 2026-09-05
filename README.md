@@ -72,7 +72,7 @@ AVEVA and has no code path that accepts anyone else's AVEVA credentials.
 
 ```bash
 python -c 'import secrets; print(secrets.token_urlsafe(32))'   # your secret
-PI_KB_MCP_SECRET=<secret> docker compose up -d                 # see compose.yaml
+PI_KB_MCP_SECRET=<secret> docker compose up -d                 # see docker-compose.yml
 ```
 
 Then seed it from your laptop, which is the only machine that can sign in:
@@ -97,7 +97,7 @@ When they do expire, tools return a message telling you to run `login --push` ag
   has both queries the KB as *you* — your entitlement, your identity, in AVEVA's logs.
   Sharing it looks exactly like you scraping the KB, which is how support accounts get
   suspended. Point other people at this repo instead; they run their own.
-- **Always put TLS in front of it.** `compose.yaml` binds to loopback for that reason.
+- **Always put TLS in front of it.** `docker-compose.yml` binds to loopback for that reason.
 - **This box now holds a long-lived credential of yours.** If it is compromised, your
   AVEVA session goes with it. That is the cost of phone access, and it is the reason
   Mode B is opt-in rather than the default.
