@@ -1,0 +1,38 @@
+[project]
+name = "pi-kb-mcp"
+version = "0.1.0"
+description = "AVEVA Customer Support Portal knowledge base articles as an MCP server"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Naufal Halal" }]
+keywords = ["mcp", "aveva", "pi-system", "knowledge-base", "documentation"]
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Software Development :: Documentation",
+]
+dependencies = [
+    "mcp>=1.2.0",
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12",
+]
+
+[project.optional-dependencies]
+# Only needed to run `pi-kb-mcp login`. Kept out of the base install so the
+# server itself — and the Docker image Glama builds — stay minimal.
+login = ["pywebview>=5.0"]
+
+[project.urls]
+Homepage = "https://github.com/nurnaufal321/pi-kb-mcp"
+Repository = "https://github.com/nurnaufal321/pi-kb-mcp"
+
+[project.scripts]
+pi-kb-mcp = "pi_kb_mcp.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pi_kb_mcp"]
