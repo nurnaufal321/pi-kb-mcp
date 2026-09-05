@@ -60,6 +60,7 @@ Sessions last about 8 hours; re-run `pi-kb-mcp login` when a tool tells you to.
 | `PI_KB_MCP_SESSION` | Override the session file location. |
 | `PI_KB_MCP_SECRET` | Mode B only. Shared secret gating the HTTP server; 24 characters minimum. |
 | `PI_KB_MCP_COOKIES` | Mode B only. Where pushed portal cookies are stored. |
+| `PI_KB_MCP_ALLOWED_HOSTS` | Mode B only. Comma-separated hostnames to accept, e.g. `kb.example.com`. Unset disables the SDK's DNS-rebinding check, which is redundant behind the shared secret. |
 | `PI_KB_BIND` | Mode B only. Host bind, if you uncomment the `ports` section. Unused by default. |
 
 ## Phone access (optional, private)

@@ -23,12 +23,15 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from mcp.server.transport_security import TransportSecuritySettings
+
 from .server import mcp
 from .session_store import relevant, save_cookies
 
 log = logging.getLogger(__name__)
 
 SECRET_ENV = "PI_KB_MCP_SECRET"
+HOSTS_ENV = "PI_KB_MCP_ALLOWED_HOSTS"
 MIN_SECRET_LEN = 24
 
 
@@ -97,6 +100,30 @@ async def push_session(request: Request) -> Response:
     return JSONResponse({"status": "stored", "cookies": len(kept)})
 
 
+def _transport_security() -> TransportSecuritySettings:
+    """Decide how the MCP transport treats the Host header.
+
+    The SDK's DNS-rebinding protection trusts only localhost by default, so a
+    server published under a real hostname answers 421 "Invalid Host header" to
+    every MCP request.
+
+    Set PI_KB_MCP_ALLOWED_HOSTS (comma-separated) to keep that protection and
+    name the hostnames you serve. With it unset, the protection is switched off:
+    it defends browser-driven rebinding against an unauthenticated local server,
+    and every request here must already carry the shared secret, which such an
+    attacker cannot obtain.
+    """
+    hosts = [h.strip() for h in os.environ.get(HOSTS_ENV, "").split(",") if h.strip()]
+    if hosts:
+        log.info("restricting MCP transport to hosts: %s", ", ".join(hosts))
+        return TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=hosts,
+            allowed_origins=[f"https://{h}" for h in hosts],
+        )
+    return TransportSecuritySettings(enable_dns_rebinding_protection=False)
+
+
 def build_app() -> Starlette:
     """Extend the MCP app rather than mounting it.
 
@@ -104,7 +131,7 @@ def build_app() -> Starlette:
     transport needs, so the extra routes are added to the MCP app itself.
     """
     secret = _secret()
-    app = mcp.streamable_http_app()
+    app = mcp.streamable_http_app(transport_security=_transport_security())
     app.add_route("/health", health, methods=["GET"])
     app.add_route("/session", push_session, methods=["POST"])
     app.add_middleware(RequireSecret, secret=secret)
