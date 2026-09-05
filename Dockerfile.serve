@@ -6,15 +6,22 @@
 #
 # This image holds YOUR portal session. Never expose it publicly, and always put
 # TLS in front of it.
-FROM python:3.12-slim
+#
+# Pinned to bookworm on purpose: Playwright's `install --with-deps` does not yet
+# resolve system packages correctly on Debian trixie, which `python:3.12-slim`
+# now tracks (libasound2 and friends were renamed with the t64 transition).
+FROM python:3.12-slim-bookworm
 
 WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
 
-RUN pip install --no-cache-dir '.[serve]' \
-    && playwright install --with-deps chromium
+# Separate steps so a build failure identifies itself rather than hiding behind
+# a compound command.
+RUN pip install --no-cache-dir '.[serve]'
+RUN playwright install-deps chromium
+RUN playwright install chromium
 
 # Session cookies live here; mount a volume so they survive redeploys and never
 # end up baked into the image.
