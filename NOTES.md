@@ -46,7 +46,11 @@ replicating the mint. See README for which deployment modes this supports.
 {
   "filters": [
     {"fieldName": "cs_languages", "groupName": "Languages",
-     "values": [{"name": "English", "isSelected": true}]}
+     "values": [{"name": "English", "isSelected": true}]},
+    {"fieldName": "cs_contentsource", "groupName": "Content Source",
+     "values": [{"name": "Knowledge Base", "isSelected": true}]},
+    {"fieldName": "cs_synonymns", "groupName": "Products",
+     "values": [{"name": "PI Vision", "isSelected": true}]}
   ],
   "dateRangeFilters": [],
   "q": "PI Vision authentication",
@@ -71,12 +75,30 @@ hasQuickView, relevance, percentageRelevance, visibility[], products[],
 publishedDate, isPadLocked, metadata{ArticleNo, ArticleLanguage, Confidence}
 ```
 
-`searchFacets[]` groups (`fieldName`/`groupName`/`values[].name`):
+### Filter field names — verified, and not guessable
+
+Facets come back with `groupName` and `values[]` but **no `fieldName`**, so the
+request-side field names had to be observed by clicking facets in the UI:
+
+| Group | `fieldName` |
+|---|---|
+| Languages | `cs_languages` |
+| Content Source | `cs_contentsource` |
+| Products | **`cs_synonymns`** — misspelled in AVEVA's API; `cs_products` and friends are silently ignored |
+
+A silently-ignored filter returns unfiltered results with HTTP 200, so verify by
+count: q=`PI Vision authentication` gives 580 unfiltered -> 373 with Content Source
+= Knowledge Base (equal to that facet's own count) -> 282 adding Products = PI Vision.
+
+`searchFacets[]` groups (`groupName`/`values[].name`/`values[].count`):
 
 - **Content Source** — `Knowledge Base`, `Online Product Documentation`, `Community`, `Product News`
   -> filter on `Knowledge Base` to scope to KB articles.
 - **Languages**
-- **Products** — full product list incl. `PI Vision`, used for the `product` argument.
+- **Products** — only the top ~10 for the current query, so it is *not* a usable
+  product list. Use the products service instead:
+  `GET /api/products/api/Products/GetAllProductsList` -> flat array of
+  `{productId, sourceId, name}`, ~1100 entries.
 
 `POST {B}/Search/QuerySuggestions` -> `{"q": "...", "numberOfResults": 5}` (typeahead; not needed).
 
