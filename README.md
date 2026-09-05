@@ -18,10 +18,24 @@ account and see exactly what that account is entitled to.
 
 ## Install
 
+Requires [uv](https://docs.astral.sh/uv/) and Python 3.11+.
+
 ```bash
-uv tool install 'pi-kb-mcp[login]'
-claude mcp add pi-kb --scope user -- pi-kb-mcp
-pi-kb-mcp login
+git clone https://github.com/nurnaufal321/pi-kb-mcp.git
+cd pi-kb-mcp
+uv sync --extra login
+```
+
+Register it, replacing the path with wherever you cloned it:
+
+```bash
+claude mcp add pi-kb --scope user -- uv run --directory /path/to/pi-kb-mcp pi-kb-mcp
+```
+
+Then sign in:
+
+```bash
+uv run pi-kb-mcp login
 ```
 
 `pi-kb-mcp login` opens a window on **AVEVA's own sign-in page**. Your password is
@@ -58,8 +72,7 @@ who reaches it would be spending your support entitlement under your identity.
 ## Development
 
 ```bash
-git clone https://github.com/nurnaufal321/pi-kb-mcp.git
-cd pi-kb-mcp && uv sync
+uv sync --extra login
 uv run pytest
 ```
 
