@@ -26,11 +26,14 @@ services:
       # and are never baked into the image.
       - pi-kb-session:/data
     ports:
-      # Defaults to loopback only. Override PI_KB_BIND in the stack environment
-      # if your reverse proxy needs a different bind, e.g. "0.0.0.0:8080".
-      # If your proxy runs in Docker, prefer attaching it to this network and
-      # dropping the published port entirely.
-      - "${PI_KB_BIND:-127.0.0.1:8080}:8080"
+      # Host side only; the container always listens on 8080 internally.
+      # Defaults to loopback on an uncommon port to avoid clashing with whatever
+      # else you run. Override in the stack environment, e.g.
+      #   PI_KB_BIND=127.0.0.1:9123      different port, still private
+      #   PI_KB_BIND=0.0.0.0:9123        reachable on the LAN (put TLS in front)
+      # If your reverse proxy runs in Docker, prefer attaching it to this
+      # service's network and deleting this ports section entirely.
+      - "${PI_KB_BIND:-127.0.0.1:9123}:8080"
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request;urllib.request.urlopen('http://localhost:8080/health')"]

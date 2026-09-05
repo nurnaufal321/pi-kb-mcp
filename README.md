@@ -60,6 +60,7 @@ Sessions last about 8 hours; re-run `pi-kb-mcp login` when a tool tells you to.
 | `PI_KB_MCP_SESSION` | Override the session file location. |
 | `PI_KB_MCP_SECRET` | Mode B only. Shared secret gating the HTTP server; 24 characters minimum. |
 | `PI_KB_MCP_COOKIES` | Mode B only. Where pushed portal cookies are stored. |
+| `PI_KB_BIND` | Mode B only. Host bind for the published port, default `127.0.0.1:9123`. |
 
 ## Phone access (optional, private)
 
