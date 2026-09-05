@@ -7,7 +7,8 @@
 # The image is prebuilt and published to ghcr.io by GitHub Actions, so your
 # host only pulls it. Nothing is compiled on your box.
 #   Environment:        PI_KB_MCP_SECRET     = <a long random string>
-#                       PI_KB_PROXY_NETWORK  = <your reverse proxy's docker network>
+#
+# Then point cloudflared's ingress for this hostname at  http://localhost:8081
 #
 # Generate the secret with:
 #   python -c 'import secrets; print(secrets.token_urlsafe(32))'
@@ -32,17 +33,18 @@ services:
       # Your portal session cookies. Kept in a volume so they survive redeploys
       # and are never baked into the image.
       - pi-kb-session:/data
-    networks:
-      # Your reverse proxy's network, so it can reach this container directly.
-      # Set PI_KB_PROXY_NETWORK in the stack environment to its name; find it with
-      #   docker inspect <proxy-container> -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}'
-      # Then point the proxy at  http://pi-kb-mcp:8080
-      - proxy
-    # No ports are published on purpose. The proxy reaches this container over
-    # the Docker network, so nothing is exposed on the host and the only route
-    # in is through your proxy. If you do need a host port, uncomment:
-    # ports:
-    #   - "${PI_KB_BIND:-127.0.0.1:8081}:8080"
+    ports:
+      # Published on the host's loopback, because cloudflared runs as a host
+      # service and reaches origins through the host's network — the same way
+      # pi-doc-mcp is reached on 8080. 8081 sits next to it.
+      #
+      # Loopback, not 0.0.0.0: this server holds an AVEVA session, so the only
+      # route in should be the tunnel, not the LAN.
+      #
+      # If you ever move cloudflared (or a proxy) into Docker, delete this
+      # section, attach both containers to a shared network, and point the proxy
+      # at http://pi-kb-mcp:8080 instead.
+      - "${PI_KB_BIND:-127.0.0.1:8081}:8080"
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request;urllib.request.urlopen('http://localhost:8080/health')"]
@@ -50,11 +52,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
-
-networks:
-  proxy:
-    external: true
-    name: ${PI_KB_PROXY_NETWORK:?set PI_KB_PROXY_NETWORK to your reverse proxy's docker network}
 
 volumes:
   pi-kb-session:
