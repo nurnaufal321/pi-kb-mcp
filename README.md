@@ -58,6 +58,51 @@ Sessions last about 8 hours; re-run `pi-kb-mcp login` when a tool tells you to.
 |---|---|
 | `AVEVA_KB_TOKEN` | Use this bearer token instead of the cached session. Fallback for headless machines and Linux without GTK/WebKit. |
 | `PI_KB_MCP_SESSION` | Override the session file location. |
+| `PI_KB_MCP_SECRET` | Mode B only. Shared secret gating the HTTP server; 24 characters minimum. |
+| `PI_KB_MCP_COOKIES` | Mode B only. Where pushed portal cookies are stored. |
+
+## Phone access (optional, private)
+
+The steps above are all you need on a laptop. If you also want to reach the KB
+from your phone, `pi-kb-mcp serve` runs a **private, single-user** HTTP server
+you host yourself.
+
+It holds exactly one AVEVA session — yours. It never asks a caller to sign in to
+AVEVA and has no code path that accepts anyone else's AVEVA credentials.
+
+```bash
+python -c 'import secrets; print(secrets.token_urlsafe(32))'   # your secret
+PI_KB_MCP_SECRET=<secret> docker compose up -d                 # see compose.yaml
+```
+
+Then seed it from your laptop, which is the only machine that can sign in:
+
+```bash
+PI_KB_MCP_SECRET=<secret> uv run pi-kb-mcp login --push https://kb.example.com
+```
+
+Add it in your client as a remote MCP server at `https://kb.example.com/mcp`
+with header `Authorization: Bearer <secret>`.
+
+**How long it lasts.** The bearer token AVEVA issues lives 8 hours, so the server
+re-mints one itself: it stores your portal cookies and boots the portal in headless
+Chromium to obtain a fresh token — the token issuer cannot be called directly (see
+[NOTES.md](NOTES.md)). You only sign in again when the *cookies* expire, which is
+typically days rather than hours, but AVEVA controls that and it is not guaranteed.
+When they do expire, tools return a message telling you to run `login --push` again.
+
+### Read this before hosting it
+
+- **Never share the URL or the secret, and never advertise it publicly.** Anyone who
+  has both queries the KB as *you* — your entitlement, your identity, in AVEVA's logs.
+  Sharing it looks exactly like you scraping the KB, which is how support accounts get
+  suspended. Point other people at this repo instead; they run their own.
+- **Always put TLS in front of it.** `compose.yaml` binds to loopback for that reason.
+- **This box now holds a long-lived credential of yours.** If it is compromised, your
+  AVEVA session goes with it. That is the cost of phone access, and it is the reason
+  Mode B is opt-in rather than the default.
+- The server refuses to start without a 24+ character secret, rejects every
+  unauthenticated request, and never logs cookie values.
 
 ## Privacy
 
@@ -66,8 +111,9 @@ touches your browser's cookie store or keychain, has no telemetry, and sends
 nothing anywhere except `softwaresupportsp.aveva.com` and
 `services.softwaresupport.aveva.com`.
 
-Don't share your session token, and don't expose this server on a network — anyone
-who reaches it would be spending your support entitlement under your identity.
+Don't share your session token. The default stdio server is not networked at all;
+if you enable the optional phone access above, keep its URL and secret private —
+anyone who reaches it spends your support entitlement under your identity.
 
 ## Development
 

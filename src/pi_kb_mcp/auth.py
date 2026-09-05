@@ -82,6 +82,38 @@ def get_token() -> str:
     return token
 
 
+async def get_token_async() -> str:
+    """Like get_token, but in Mode B mint a new token instead of giving up.
+
+    The stdio server has no way to refresh unattended and must ask the user to
+    log in; the HTTP server holds portal cookies and can boot the SPA headlessly.
+    """
+    try:
+        return get_token()
+    except AuthError:
+        if not _refresh_enabled():
+            raise
+        from .refresh import RefreshError, mint_token
+        try:
+            token = await mint_token()
+        except RefreshError as exc:
+            raise AuthError(str(exc)) from None
+        save_token(token, token_expiry(token))
+        return token
+
+
+def _refresh_enabled() -> bool:
+    """Only Mode B refreshes itself; the flag is set by the HTTP entry point."""
+    return os.environ.get("PI_KB_MCP_SELF_REFRESH") == "1"
+
+
+async def auth_headers_async() -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {await get_token_async()}",
+        "Accept": "application/json, text/plain, */*",
+    }
+
+
 def auth_headers() -> dict[str, str]:
     return {
         "Authorization": f"Bearer {get_token()}",

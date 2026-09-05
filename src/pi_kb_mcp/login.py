@@ -63,7 +63,66 @@ def _extract(raw: str) -> str:
     return token
 
 
-def run_login(timeout: int = 600) -> str:
+def _cookies_from_window(window) -> list[dict]:
+    """Normalise pywebview's cookies into the shape Playwright expects."""
+    try:
+        raw = window.get_cookies() or []
+    except Exception:
+        return []
+
+    out: list[dict] = []
+    for entry in raw:
+        # pywebview yields http.cookies.SimpleCookie objects.
+        morsels = entry.values() if hasattr(entry, "values") else [entry]
+        for morsel in morsels:
+            name = getattr(morsel, "key", None)
+            value = getattr(morsel, "value", None)
+            if not name or value is None:
+                continue
+            out.append({
+                "name": name,
+                "value": value,
+                "domain": morsel.get("domain") or "softwaresupportsp.aveva.com",
+                "path": morsel.get("path") or "/",
+                "httpOnly": bool(morsel.get("httponly")),
+                "secure": True,
+                "sameSite": "None",
+            })
+    return out
+
+
+def push_session(url: str, secret: str, cookies: list[dict]) -> None:
+    """Send the portal session to a private Mode B instance over TLS."""
+    import httpx
+
+    from .session_store import relevant
+
+    kept = relevant(cookies)
+    if not kept:
+        raise SystemExit(
+            "No portal session cookies were captured, so there is nothing to push. "
+            "This can happen if the web view blocks cookie access; see the README."
+        )
+
+    endpoint = url.rstrip("/") + "/session"
+    if not endpoint.startswith("https://") and "localhost" not in endpoint:
+        raise SystemExit(
+            f"Refusing to push a session over plain HTTP to {endpoint}. Use https."
+        )
+
+    resp = httpx.post(
+        endpoint,
+        json={"cookies": kept},
+        headers={"Authorization": f"Bearer {secret}"},
+        timeout=30.0,
+    )
+    if resp.status_code == 401:
+        raise SystemExit("Server rejected the secret. Check PI_KB_MCP_SECRET matches.")
+    resp.raise_for_status()
+    print(f"Pushed {len(kept)} session cookies to {url}.")
+
+
+def run_login(timeout: int = 600, push_url: str | None = None) -> str:
     try:
         import webview
     except ImportError:
@@ -74,7 +133,7 @@ def run_login(timeout: int = 600) -> str:
             "practical, set AVEVA_KB_TOKEN instead."
         ) from None
 
-    captured: dict[str, str] = {}
+    captured: dict = {}
 
     def watch(window) -> None:
         print("Sign in to the AVEVA portal in the window that opened.")
@@ -98,6 +157,8 @@ def run_login(timeout: int = 600) -> str:
                 continue
             if found:
                 captured["token"] = _extract(found[0])
+                if push_url:
+                    captured["cookies"] = _cookies_from_window(window)
                 break
         try:
             window.destroy()
@@ -113,6 +174,16 @@ def run_login(timeout: int = 600) -> str:
             "No token captured. Make sure you completed sign-in before the window "
             "closed, then run `pi-kb-mcp login` again."
         )
+
+    if push_url:
+        import os
+        secret = os.environ.get("PI_KB_MCP_SECRET", "")
+        if not secret:
+            raise SystemExit(
+                "Set PI_KB_MCP_SECRET to the same secret your server uses before "
+                "pushing a session."
+            )
+        push_session(push_url, secret, captured.get("cookies") or [])
 
     expires_at = token_expiry(token)
     path = save_token(token, expires_at)

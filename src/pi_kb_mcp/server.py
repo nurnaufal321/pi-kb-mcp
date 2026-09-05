@@ -16,7 +16,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from .auth import AuthError, auth_headers
+from .auth import AuthError, auth_headers_async
 
 API_ROOT = "https://services.softwaresupport.aveva.com/api"
 SEARCH_BASE = f"{API_ROOT}/search/api/v1"
@@ -140,7 +140,7 @@ async def _post(path: str, body: dict) -> dict:
     resp = await get_client().post(
         f"{SEARCH_BASE}{path}",
         json=body,
-        headers={**auth_headers(), "Content-Type": "application/json"},
+        headers={**(await auth_headers_async()), "Content-Type": "application/json"},
     )
     resp.raise_for_status()
     return resp.json()
@@ -252,7 +252,7 @@ async def get_kb_article(
         resp = await get_client().get(
             f"{SEARCH_BASE}/KnowledgeBase/KBArticle",
             params={"docID": number, "lang": "en_US"},
-            headers=auth_headers(),
+            headers=await auth_headers_async(),
         )
         resp.raise_for_status()
     except Exception as exc:
@@ -309,7 +309,7 @@ async def list_kb_products(
     global _products_cache
     if _products_cache is None:
         try:
-            resp = await get_client().get(PRODUCTS_URL, headers=auth_headers())
+            resp = await get_client().get(PRODUCTS_URL, headers=await auth_headers_async())
             resp.raise_for_status()
         except Exception as exc:
             return _explain(exc)

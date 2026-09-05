@@ -1,0 +1,29 @@
+# Mode B: private single-user HTTP server with self-refresh.
+#
+# Bigger than the stdio image because it carries headless Chromium: the portal's
+# token issuer cannot be called directly, so the only unattended way to mint a
+# token is to boot the real SPA and observe it (see NOTES.md).
+#
+# This image holds YOUR portal session. Never expose it publicly, and always put
+# TLS in front of it.
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
+
+RUN pip install --no-cache-dir '.[serve]' \
+    && playwright install --with-deps chromium
+
+# Session cookies live here; mount a volume so they survive redeploys and never
+# end up baked into the image.
+ENV PI_KB_MCP_COOKIES=/data/cookies.json \
+    PI_KB_MCP_SESSION=/data/session.json \
+    PORT=8080
+VOLUME ["/data"]
+EXPOSE 8080
+
+# PI_KB_MCP_SECRET must be supplied at runtime; the server refuses to start
+# without one of at least 24 characters.
+ENTRYPOINT ["pi-kb-mcp", "serve"]

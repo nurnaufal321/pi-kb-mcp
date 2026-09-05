@@ -1,0 +1,34 @@
+# Portainer stack for Mode B (private, single-user).
+#
+# Before deploying:
+#   1. Generate a secret:
+#        python -c 'import secrets; print(secrets.token_urlsafe(32))'
+#   2. Put it in PI_KB_MCP_SECRET below (or a Portainer environment variable).
+#   3. Put TLS in front of this service — never expose port 8080 directly.
+#
+# This server holds YOUR AVEVA session. Anyone with the URL and the secret
+# spends your support entitlement under your identity, so do not share either.
+services:
+  pi-kb-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.serve
+    restart: unless-stopped
+    environment:
+      # Required. At least 24 characters; the server refuses to start without it.
+      PI_KB_MCP_SECRET: ${PI_KB_MCP_SECRET:?set PI_KB_MCP_SECRET}
+    volumes:
+      # Portal session cookies. Never bake these into the image.
+      - pi-kb-session:/data
+    ports:
+      # Bind to loopback so only your TLS terminator can reach it.
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  pi-kb-session:

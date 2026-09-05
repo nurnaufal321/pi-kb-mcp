@@ -20,8 +20,10 @@ dependencies = [
 
 [project.optional-dependencies]
 # Only needed to run `pi-kb-mcp login`. Kept out of the base install so the
-# server itself — and the Docker image Glama builds — stay minimal.
-login = ["pywebview>=5.0"]
+# stdio server — and the Docker image Glama builds — stay minimal.
+login = ["pywebview>=5.0", "httpx>=0.27"]
+# Only needed for `pi-kb-mcp serve` (Mode B, private HTTP + self-refresh).
+serve = ["starlette>=0.37", "uvicorn>=0.30", "playwright>=1.45"]
 
 [project.urls]
 Homepage = "https://github.com/nurnaufal321/pi-kb-mcp"

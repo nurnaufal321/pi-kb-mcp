@@ -3,6 +3,7 @@
 import ast
 import json
 import os
+import sys
 import stat
 import tempfile
 from pathlib import Path
@@ -93,10 +94,15 @@ class TestServerSurface:
     """Guards the properties the Glama score and the security scan depend on."""
 
     def test_server_process_never_reads_credential_stores(self):
+        # login.py (desktop web view) and refresh.py (Mode B headless browser)
+        # are the only modules allowed a browser. Neither is imported by the
+        # stdio server: refresh.py is imported lazily, and only when Mode B
+        # sets PI_KB_MCP_SELF_REFRESH.
+        allowed = {"login.py", "refresh.py"}
         src = (Path(__file__).parent / "src" / "pi_kb_mcp").glob("*.py")
         for path in src:
-            if path.name == "login.py":
-                continue  # the login command is allowed a web view
+            if path.name in allowed:
+                continue
             tree = ast.parse(path.read_text())
             imported = set()
             for node in ast.walk(tree):
@@ -107,6 +113,21 @@ class TestServerSurface:
             banned = {"keyring", "browser_cookie3", "rookiepy", "rookie", "webview",
                       "playwright", "secretstorage"}
             assert not (imported & banned), f"{path.name} imports {imported & banned}"
+
+    def test_stdio_server_import_graph_has_no_browser(self):
+        """The default server must not pull in a browser, even transitively."""
+        import subprocess
+        code = (
+            "import sys, pi_kb_mcp.server;"
+            "mods = set(sys.modules);"
+            "bad = {m for m in mods if m.split('.')[0] in "
+            "{'playwright', 'webview', 'keyring', 'browser_cookie3'}};"
+            "print(sorted(bad))"
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, check=True
+        )
+        assert out.stdout.strip() == "[]", f"browser modules loaded: {out.stdout}"
 
     @pytest.mark.anyio
     async def test_three_read_only_tools(self):
@@ -121,3 +142,50 @@ class TestServerSurface:
     @pytest.fixture
     def anyio_backend(self):
         return "asyncio"
+
+
+class TestModeBGate:
+    """Mode B is private by construction; these guard that."""
+
+    def test_refuses_to_start_without_a_strong_secret(self, monkeypatch):
+        from pi_kb_mcp import http_app
+
+        for value in ("", "short", "x" * 23):
+            monkeypatch.setenv(http_app.SECRET_ENV, value)
+            with pytest.raises(SystemExit):
+                http_app._secret()
+
+        monkeypatch.setenv(http_app.SECRET_ENV, "y" * 24)
+        assert http_app._secret() == "y" * 24
+
+    def test_only_session_cookies_are_persisted(self):
+        from pi_kb_mcp.session_store import relevant
+
+        kept = relevant([
+            {"name": "_ga", "value": "analytics"},
+            {"name": "notice_behavior", "value": "consent"},
+            {"name": "FedAuth", "value": "session"},
+        ])
+        assert [c["name"] for c in kept] == ["FedAuth"]
+
+    def test_cookies_written_owner_only(self, monkeypatch):
+        from pi_kb_mcp import session_store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cookies.json"
+            monkeypatch.setattr(session_store, "STORE_PATH", path)
+            session_store.save_cookies([{"name": "FedAuth", "value": "x"}])
+            assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+            assert session_store.load_cookies()[0]["name"] == "FedAuth"
+
+    def test_missing_cookie_store_reads_empty(self, monkeypatch):
+        from pi_kb_mcp import session_store
+
+        monkeypatch.setattr(session_store, "STORE_PATH", Path("/nonexistent/c.json"))
+        assert session_store.load_cookies() == []
+
+    def test_self_refresh_is_off_unless_mode_b_sets_it(self, monkeypatch):
+        monkeypatch.delenv("PI_KB_MCP_SELF_REFRESH", raising=False)
+        assert auth._refresh_enabled() is False
+        monkeypatch.setenv("PI_KB_MCP_SELF_REFRESH", "1")
+        assert auth._refresh_enabled() is True
