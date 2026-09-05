@@ -16,16 +16,23 @@ STORE_PATH = Path(
     or Path.home() / ".config" / "pi-kb-mcp" / "cookies.json"
 )
 
-# Cookies the portal login actually needs; anything else (analytics, consent)
-# is dropped so we persist as little as possible.
-KEEP_PREFIXES = ("FedAuth", "rtFa", "EdgeAccessCookie", "SPOIDCRL")
+# Analytics and consent cookies, dropped so we persist as little as possible.
+# This is a denylist rather than an allowlist on purpose: an allowlist of
+# guessed session-cookie names silently discarded everything and left the
+# server with no session at all.
+DROP_PREFIXES = (
+    "_ga", "_gid", "_gat", "_fbp", "_uet",
+    "notice_", "cmapi_", "TAsessionID", "OptanonConsent", "OptanonAlertBox",
+    "AMCV_", "AMCVS_", "s_cc", "s_sq", "mbox",
+)
 
 
 def relevant(cookies: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Keep only session cookies, discarding analytics and consent cookies."""
+    """Drop analytics and consent cookies, keep everything else."""
     return [
         c for c in cookies
-        if any(str(c.get("name", "")).startswith(p) for p in KEEP_PREFIXES)
+        if c.get("name")
+        and not any(str(c["name"]).startswith(p) for p in DROP_PREFIXES)
     ]
 
 

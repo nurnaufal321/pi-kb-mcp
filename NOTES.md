@@ -22,9 +22,16 @@ Content-Type: application/json          # POST only
 JWT claims: `sub`/`samaccountname`, `email`, `techsupportid`, `iss=http://jwtauthsrv.gcsdev.com`.
 **`exp - nbf` = 28800s = exactly 8 hours.**
 
-Login chain: ADFS (`extlogon.aveva.com`, WS-Fed) -> `/_trust` -> FedAuth cookie
+Login chain: ADFS (`extlogon.aveva.com`, WS-Fed) -> `/_trust` -> session cookie
 (HttpOnly, not visible to JS) -> SPA holds the JWT **in memory only** (nothing in
 localStorage/sessionStorage/document.cookie).
+
+**The session cookie is `.AspNetCore.Cookies`** — observed, not inferred. Despite
+the SharePoint-style `/_trust` endpoint this is not a SharePoint `FedAuth` cookie;
+guessing that name and filtering on it discarded the whole session. The full set a
+signed-in window holds is `.AspNetCore.Cookies`,
+`.AspNetCore.Correlation.<nonce>`, `ARRAffinity` and `ARRAffinitySameSite`
+(the last two are Azure load-balancer affinity), plus analytics cookies.
 
 ### Open question: how the JWT is minted
 

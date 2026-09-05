@@ -72,6 +72,19 @@ def _cookies_from_window(window) -> list[dict]:
 
     out: list[dict] = []
     for entry in raw:
+        # pywebview returns SimpleCookie objects on some platforms and plain
+        # dicts on others; handle both rather than assuming.
+        if isinstance(entry, dict) and "name" in entry:
+            out.append({
+                "name": entry["name"],
+                "value": entry.get("value", ""),
+                "domain": entry.get("domain") or "softwaresupportsp.aveva.com",
+                "path": entry.get("path") or "/",
+                "httpOnly": bool(entry.get("httpOnly")),
+                "secure": True,
+                "sameSite": "None",
+            })
+            continue
         # pywebview yields http.cookies.SimpleCookie objects.
         morsels = entry.values() if hasattr(entry, "values") else [entry]
         for morsel in morsels:
@@ -98,11 +111,15 @@ def push_session(url: str, secret: str, cookies: list[dict]) -> None:
     from .session_store import relevant
 
     kept = relevant(cookies)
+    # Names only — never print or log cookie values.
+    print(f"Captured {len(cookies)} cookies: {sorted(c.get('name','?') for c in cookies)}")
     if not kept:
         raise SystemExit(
-            "No portal session cookies were captured, so there is nothing to push. "
-            "This can happen if the web view blocks cookie access; see the README."
+            "No portal session cookies were captured, so there is nothing to push.\n"
+            "If the list above is empty, this web view did not expose cookies at all.\n"
+            "See the README for the AVEVA_KB_TOKEN fallback."
         )
+    print(f"Keeping {len(kept)}: {sorted(c['name'] for c in kept)}")
 
     endpoint = url.rstrip("/") + "/session"
     if not endpoint.startswith("https://") and "localhost" not in endpoint:
