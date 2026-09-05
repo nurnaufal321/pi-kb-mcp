@@ -1,34 +1,43 @@
-# Portainer stack for Mode B (private, single-user).
+# Portainer stack for pi-kb-mcp (private, single-user HTTP server).
 #
-# Before deploying:
-#   1. Generate a secret:
-#        python -c 'import secrets; print(secrets.token_urlsafe(32))'
-#   2. Put it in PI_KB_MCP_SECRET below (or a Portainer environment variable).
-#   3. Put TLS in front of this service — never expose port 8080 directly.
+# Deploy in Portainer:  Stacks -> Add stack -> Repository
+#   Repository URL:     https://github.com/nurnaufal321/pi-kb-mcp
+#   Compose path:       compose.yaml
+#   Environment:        PI_KB_MCP_SECRET = <a long random string>
+#
+# Generate the secret with:
+#   python -c 'import secrets; print(secrets.token_urlsafe(32))'
 #
 # This server holds YOUR AVEVA session. Anyone with the URL and the secret
-# spends your support entitlement under your identity, so do not share either.
+# queries the knowledge base as you, under your entitlement and your identity.
+# Keep both private; never advertise this endpoint.
 services:
   pi-kb-mcp:
     build:
       context: .
       dockerfile: Dockerfile.serve
+    image: pi-kb-mcp:serve
     restart: unless-stopped
     environment:
-      # Required. At least 24 characters; the server refuses to start without it.
-      PI_KB_MCP_SECRET: ${PI_KB_MCP_SECRET:?set PI_KB_MCP_SECRET}
+      # Required. The server exits at startup if this is under 24 characters.
+      PI_KB_MCP_SECRET: ${PI_KB_MCP_SECRET:?set PI_KB_MCP_SECRET in the stack environment}
     volumes:
-      # Portal session cookies. Never bake these into the image.
+      # Your portal session cookies. Kept in a volume so they survive redeploys
+      # and are never baked into the image.
       - pi-kb-session:/data
     ports:
-      # Bind to loopback so only your TLS terminator can reach it.
-      - "127.0.0.1:8080:8080"
+      # Defaults to loopback only. Override PI_KB_BIND in the stack environment
+      # if your reverse proxy needs a different bind, e.g. "0.0.0.0:8080".
+      # If your proxy runs in Docker, prefer attaching it to this network and
+      # dropping the published port entirely.
+      - "${PI_KB_BIND:-127.0.0.1:8080}:8080"
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request;urllib.request.urlopen('http://localhost:8080/health')"]
       interval: 60s
       timeout: 10s
       retries: 3
+      start_period: 20s
 
 volumes:
   pi-kb-session:
