@@ -42,7 +42,7 @@ services:
     # the Docker network, so nothing is exposed on the host and the only route
     # in is through your proxy. If you do need a host port, uncomment:
     # ports:
-    #   - "${PI_KB_BIND:-127.0.0.1:9123}:8080"
+    #   - "${PI_KB_BIND:-127.0.0.1:8081}:8080"
     healthcheck:
       test: ["CMD", "python", "-c",
              "import urllib.request;urllib.request.urlopen('http://localhost:8080/health')"]
