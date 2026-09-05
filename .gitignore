@@ -1,0 +1,15 @@
+# Session material — never commit
+session.json
+.env
+*.token
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+dist/
+build/
+*.egg-info/
+
+# OS
+.DS_Store
