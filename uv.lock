@@ -543,7 +543,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'login'", specifier = ">=0.27" },
     { name = "mcp", specifier = ">=1.2.0" },
-    { name = "playwright", marker = "extra == 'serve'", specifier = ">=1.45" },
+    { name = "playwright", marker = "extra == 'serve'", specifier = "==1.62.0" },
     { name = "pywebview", marker = "extra == 'login'", specifier = ">=5.0" },
     { name = "starlette", marker = "extra == 'serve'", specifier = ">=0.37" },
     { name = "uvicorn", marker = "extra == 'serve'", specifier = ">=0.30" },

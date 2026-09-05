@@ -1,27 +1,24 @@
 # Mode B: private single-user HTTP server with self-refresh.
 #
-# Bigger than the stdio image because it carries headless Chromium: the portal's
-# token issuer cannot be called directly, so the only unattended way to mint a
-# token is to boot the real SPA and observe it (see NOTES.md).
+# Built on Playwright's official image, which ships Chromium and every system
+# library it needs. Installing the browser onto a plain python:slim base fails:
+# `playwright install --with-deps` cannot resolve packages on Debian trixie
+# (the t64 renames), and pinning back to bookworm only moves the problem.
 #
-# This image holds YOUR portal session. Never expose it publicly, and always put
-# TLS in front of it.
+# Chromium is here because the portal's token issuer is dead — it returns HTTP
+# 500 to every call, WSDL included — so the only unattended way to mint a token
+# is to boot the real SPA and read the token off its own request. See NOTES.md.
 #
-# Pinned to bookworm on purpose: Playwright's `install --with-deps` does not yet
-# resolve system packages correctly on Debian trixie, which `python:3.12-slim`
-# now tracks (libasound2 and friends were renamed with the t64 transition).
-FROM python:3.12-slim-bookworm
+# The image tag and the playwright pin in pyproject.toml must stay in step, or
+# the Python client will not match the bundled browser.
+FROM mcr.microsoft.com/playwright/python:v1.62.0-noble
 
 WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
 
-# Separate steps so a build failure identifies itself rather than hiding behind
-# a compound command.
-RUN pip install --no-cache-dir '.[serve]'
-RUN playwright install-deps chromium
-RUN playwright install chromium
+RUN pip install --no-cache-dir --break-system-packages '.[serve]'
 
 # Session cookies live here; mount a volume so they survive redeploys and never
 # end up baked into the image.
