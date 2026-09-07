@@ -296,6 +296,20 @@ class TestPhoneLoginSurface:
             attrs = html.split(f'id="{field_id}"')[1].split(">")[0]
             assert 'autocomplete="off"' in attrs, f"#{field_id} must not be autofillable"
 
+    def test_a_successful_sign_in_explicitly_asks_the_browser_to_remember_it(self):
+        """A fetch()-driven login gives most browsers no heuristic signal to
+        offer saving a password -- there is no real <form> submit for them to
+        observe. navigator.credentials.store() is the only reliable way to ask
+        for that prompt from JS. Regression test for the bug where this was
+        simply never called, so autocomplete="current-password" alone did
+        nothing: no test caught that the first time, hence this one."""
+        html = self.client().get("/login").text
+        assert "navigator.credentials.store" in html
+        assert "PasswordCredential" in html
+        # Must be the secret's own value, not the AVEVA password.
+        store_call = html[html.index("navigator.credentials.store"):]
+        assert "password: s.value" in store_call.split(";")[0] + store_call.split(";")[1]
+
     def test_secret_and_aveva_fields_sit_in_separate_forms(self):
         """A password manager that sees one <form> with two password fields
         tends to treat it as a change-password form and mismatches which
