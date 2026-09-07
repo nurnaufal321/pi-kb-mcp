@@ -6,6 +6,10 @@ without a human is to let the real application boot and observe the request it
 makes. This loads the SPA in headless Chromium with the stored session cookies
 injected, then reads the Authorization header off the app's own API call.
 
+Booting the real app also rolls its session cookie forward, so a successful mint
+hands back a longer-lived session than the one it started with. Persisting that
+is what keeps this server going without another `login --push`.
+
 Requires the `serve` extra (Playwright). Not imported by the stdio server.
 """
 
@@ -13,7 +17,7 @@ from __future__ import annotations
 
 import logging
 
-from .session_store import load_cookies
+from .session_store import SESSION_COOKIE, load_cookies, relevant, save_cookies
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +47,7 @@ async def mint_token(timeout_ms: int = 45_000) -> str:
         ) from None
 
     captured: list[str] = []
+    refreshed: list[dict] = []
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(args=["--no-sandbox"])
@@ -67,6 +72,12 @@ async def mint_token(timeout_ms: int = 45_000) -> str:
                 if captured:
                     break
                 await page.wait_for_timeout(1000)
+
+            # Read the cookies before the context goes away. They are only
+            # persisted below, once a captured token proves this boot really
+            # did authenticate.
+            if captured:
+                refreshed = await context.cookies()
         finally:
             await browser.close()
 
@@ -76,5 +87,21 @@ async def mint_token(timeout_ms: int = 45_000) -> str:
             "Run `pi-kb-mcp login --push <url>` again from a machine with a browser."
         )
 
+    _roll_session_forward(refreshed)
     log.info("minted a fresh portal token")
     return captured[0]
+
+
+def _roll_session_forward(cookies: list[dict]) -> None:
+    """Persist the cookies the portal handed back during a successful boot.
+
+    Never called unless a token was captured, and even then it refuses to write
+    a set that has lost the session cookie: replacing a working jar with an
+    anonymous one would leave this server with no way back and no way to say so.
+    """
+    kept = relevant(cookies)
+    if not any(c.get("name") == SESSION_COOKIE for c in kept):
+        log.warning("refreshed cookies carry no %s; keeping the stored set", SESSION_COOKIE)
+        return
+    save_cookies(kept)
+    log.info("rolled the stored portal session forward (%d cookies)", len(kept))

@@ -189,3 +189,52 @@ class TestModeBGate:
         assert auth._refresh_enabled() is False
         monkeypatch.setenv("PI_KB_MCP_SELF_REFRESH", "1")
         assert auth._refresh_enabled() is True
+
+
+class TestSessionRollsForward:
+    """Part 1: a successful mint must extend the stored session, never destroy it."""
+
+    def _store(self, monkeypatch, tmp):
+        from pi_kb_mcp import session_store
+        path = Path(tmp) / "cookies.json"
+        monkeypatch.setattr(session_store, "STORE_PATH", path)
+        return session_store, path
+
+    def test_successful_boot_persists_the_freshened_cookies(self, monkeypatch):
+        from pi_kb_mcp import refresh, session_store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store, path = self._store(monkeypatch, tmp)
+            store.save_cookies([{"name": session_store.SESSION_COOKIE, "value": "old"}])
+
+            refresh._roll_session_forward([
+                {"name": session_store.SESSION_COOKIE, "value": "new"},
+                {"name": "_ga", "value": "analytics"},
+            ])
+
+            kept = store.load_cookies()
+            assert [c["name"] for c in kept] == [session_store.SESSION_COOKIE]
+            assert kept[0]["value"] == "new", "the rolled-forward cookie should win"
+
+    def test_never_clobbers_a_good_jar_with_an_anonymous_one(self, monkeypatch):
+        """The failure that would strand the server with no way back."""
+        from pi_kb_mcp import refresh, session_store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store, path = self._store(monkeypatch, tmp)
+            store.save_cookies([{"name": session_store.SESSION_COOKIE, "value": "good"}])
+
+            # A boot that never authenticated: load-balancer affinity only.
+            refresh._roll_session_forward([{"name": "ARRAffinity", "value": "x"}])
+
+            kept = store.load_cookies()
+            assert kept == [{"name": session_store.SESSION_COOKIE, "value": "good"}]
+
+    def test_empty_cookie_set_leaves_the_store_untouched(self, monkeypatch):
+        from pi_kb_mcp import refresh, session_store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store, path = self._store(monkeypatch, tmp)
+            store.save_cookies([{"name": session_store.SESSION_COOKIE, "value": "good"}])
+            refresh._roll_session_forward([])
+            assert store.load_cookies()[0]["value"] == "good"
