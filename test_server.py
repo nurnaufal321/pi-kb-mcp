@@ -1,11 +1,13 @@
 """Unit tests. No network and no credentials — see NOTES.md for live shapes."""
 
 import ast
+import asyncio
 import json
 import os
 import sys
 import stat
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -94,11 +96,12 @@ class TestServerSurface:
     """Guards the properties the Glama score and the security scan depend on."""
 
     def test_server_process_never_reads_credential_stores(self):
-        # login.py (desktop web view) and refresh.py (Mode B headless browser)
-        # are the only modules allowed a browser. Neither is imported by the
-        # stdio server: refresh.py is imported lazily, and only when Mode B
-        # sets PI_KB_MCP_SELF_REFRESH.
-        allowed = {"login.py", "refresh.py"}
+        # login.py (desktop web view), refresh.py (Mode B headless refresh) and
+        # portal_login.py (Mode B phone sign-in) are the only modules allowed a
+        # browser. None is imported by the stdio server: refresh.py is imported
+        # lazily and only when Mode B sets PI_KB_MCP_SELF_REFRESH, and
+        # portal_login.py only from the Mode B /login route.
+        allowed = {"login.py", "refresh.py", "portal_login.py"}
         src = (Path(__file__).parent / "src" / "pi_kb_mcp").glob("*.py")
         for path in src:
             if path.name in allowed:
@@ -189,3 +192,403 @@ class TestModeBGate:
         assert auth._refresh_enabled() is False
         monkeypatch.setenv("PI_KB_MCP_SELF_REFRESH", "1")
         assert auth._refresh_enabled() is True
+
+
+class TestSessionRollsForward:
+    """Part 1: a successful mint must extend the stored session, never destroy it."""
+
+    def _store(self, monkeypatch, tmp):
+        from pi_kb_mcp import session_store
+        path = Path(tmp) / "cookies.json"
+        monkeypatch.setattr(session_store, "STORE_PATH", path)
+        return session_store, path
+
+    def test_successful_boot_persists_the_freshened_cookies(self, monkeypatch):
+        from pi_kb_mcp import refresh, session_store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store, path = self._store(monkeypatch, tmp)
+            store.save_cookies([{"name": session_store.SESSION_COOKIE, "value": "old"}])
+
+            refresh._roll_session_forward([
+                {"name": session_store.SESSION_COOKIE, "value": "new"},
+                {"name": "_ga", "value": "analytics"},
+            ])
+
+            kept = store.load_cookies()
+            assert [c["name"] for c in kept] == [session_store.SESSION_COOKIE]
+            assert kept[0]["value"] == "new", "the rolled-forward cookie should win"
+
+    def test_never_clobbers_a_good_jar_with_an_anonymous_one(self, monkeypatch):
+        """The failure that would strand the server with no way back."""
+        from pi_kb_mcp import refresh, session_store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store, path = self._store(monkeypatch, tmp)
+            store.save_cookies([{"name": session_store.SESSION_COOKIE, "value": "good"}])
+
+            # A boot that never authenticated: load-balancer affinity only.
+            refresh._roll_session_forward([{"name": "ARRAffinity", "value": "x"}])
+
+            kept = store.load_cookies()
+            assert kept == [{"name": session_store.SESSION_COOKIE, "value": "good"}]
+
+    def test_empty_cookie_set_leaves_the_store_untouched(self, monkeypatch):
+        from pi_kb_mcp import refresh, session_store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store, path = self._store(monkeypatch, tmp)
+            store.save_cookies([{"name": session_store.SESSION_COOKIE, "value": "good"}])
+            refresh._roll_session_forward([])
+            assert store.load_cookies()[0]["value"] == "good"
+
+
+SENTINEL_PW = "SENTINEL-PW-9f3a2b"
+SENTINEL_USER = "SENTINEL-USER-4c1d"
+SECRET = "z" * 32
+
+
+def _login_app():
+    """The Mode B routes under test, wired exactly as build_app wires them."""
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+
+    from pi_kb_mcp import http_app
+
+    app = Starlette(routes=[
+        Route("/health", http_app.health, methods=["GET"]),
+        Route("/login", http_app.login_page, methods=["GET"]),
+        Route("/login", http_app.sign_in, methods=["POST"]),
+    ])
+    app.add_middleware(http_app.RequireSecret, secret=SECRET)
+    return app
+
+
+class TestPhoneLoginSurface:
+    """The /login routes: what is reachable, and by whom."""
+
+    def client(self):
+        from starlette.testclient import TestClient
+        return TestClient(_login_app())
+
+    def test_form_is_reachable_without_the_secret(self):
+        """A phone browser cannot set a bearer header on a plain navigation."""
+        r = self.client().get("/login")
+        assert r.status_code == 200
+        assert "AVEVA password" in r.text
+
+    def test_form_carries_no_secret(self):
+        assert SECRET not in self.client().get("/login").text
+
+    def test_posting_credentials_requires_the_secret(self):
+        r = self.client().post("/login", json={"username": "u", "password": "p"})
+        assert r.status_code == 401
+
+    def test_wrong_secret_is_rejected(self):
+        r = self.client().post(
+            "/login", json={"username": "u", "password": "p"},
+            headers={"Authorization": "Bearer " + "q" * 32},
+        )
+        assert r.status_code == 401
+
+    def test_both_fields_required(self):
+        r = self.client().post(
+            "/login", json={"username": "u", "password": ""},
+            headers={"Authorization": f"Bearer {SECRET}"},
+        )
+        assert r.status_code == 400
+
+    def test_build_app_registers_both_login_routes(self, monkeypatch):
+        from pi_kb_mcp import http_app
+
+        monkeypatch.setenv(http_app.SECRET_ENV, SECRET)
+        methods = set()
+        for route in http_app.build_app().routes:
+            if getattr(route, "path", None) == "/login":
+                methods |= set(route.methods or [])
+        assert {"GET", "POST"} <= methods
+
+
+class TestCredentialsAreNotRetained:
+    """Credentials must not survive the request that carried them.
+
+    A sentinel password is pushed through the real handler and then hunted for
+    in every place it could plausibly come to rest. This exists to fail loudly
+    if someone later adds a well-meaning debug log.
+    """
+
+    def _run(self, monkeypatch, caplog, tmp, sign_in_impl):
+        import logging
+
+        from starlette.testclient import TestClient
+
+        from pi_kb_mcp import http_app, portal_login, session_store
+
+        store = Path(tmp) / "cookies.json"
+        monkeypatch.setattr(session_store, "STORE_PATH", store)
+        monkeypatch.setattr(portal_login, "sign_in", sign_in_impl)
+
+        with caplog.at_level(logging.DEBUG):
+            response = TestClient(_login_app()).post(
+                "/login",
+                json={"username": SENTINEL_USER, "password": SENTINEL_PW},
+                headers={"Authorization": f"Bearer {SECRET}"},
+            )
+        return response, store, caplog.text
+
+    def test_nothing_typed_reaches_disk_logs_or_the_response(
+        self, monkeypatch, caplog
+    ):
+        from pi_kb_mcp import session_store
+
+        async def fake_sign_in(username, password, **kw):
+            assert password == SENTINEL_PW, "the handler must pass the real password"
+            return [{"name": session_store.SESSION_COOKIE, "value": "fresh"}]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            response, store, logs = self._run(monkeypatch, caplog, tmp, fake_sign_in)
+
+            assert response.status_code == 200
+            assert response.json() == {"status": "stored", "cookies": 1}
+
+            haystacks = {
+                "response body": response.text,
+                "captured logs": logs,
+                "cookie store": store.read_text(),
+            }
+            for where, text in haystacks.items():
+                assert SENTINEL_PW not in text, f"password leaked into {where}"
+                assert SENTINEL_USER not in text, f"username leaked into {where}"
+
+    def test_a_failed_sign_in_leaks_nothing_and_keeps_the_old_session(
+        self, monkeypatch, caplog
+    ):
+        from pi_kb_mcp import portal_login, session_store
+
+        async def failing_sign_in(username, password, **kw):
+            raise portal_login.LoginError(
+                'Sign-in did not complete — at extlogon.aveva.com/adfs/ls; '
+                'error: "Incorrect user ID or password".'
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "cookies.json"
+            monkeypatch.setattr(session_store, "STORE_PATH", store)
+            session_store.save_cookies(
+                [{"name": session_store.SESSION_COOKIE, "value": "still-good"}]
+            )
+
+            response, store, logs = self._run(
+                monkeypatch, caplog, tmp, failing_sign_in
+            )
+
+            assert response.status_code == 502
+            # The diagnostic must say where it landed...
+            assert "extlogon.aveva.com" in response.json()["error"]
+            # ...without echoing anything that was typed.
+            for where, text in {"response": response.text, "logs": logs}.items():
+                assert SENTINEL_PW not in text, f"password leaked into {where}"
+                assert SENTINEL_USER not in text, f"username leaked into {where}"
+            # And a failure must never cost the working session.
+            assert session_store.load_cookies()[0]["value"] == "still-good"
+
+    def test_a_jar_without_a_session_cookie_is_refused(self, monkeypatch, caplog):
+        """Guards the abuse case: a bad login must not evict a good session."""
+        from pi_kb_mcp import session_store
+
+        async def anonymous_sign_in(username, password, **kw):
+            return [{"name": "ARRAffinity", "value": "x"}]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "cookies.json"
+            monkeypatch.setattr(session_store, "STORE_PATH", store)
+            session_store.save_cookies(
+                [{"name": session_store.SESSION_COOKIE, "value": "still-good"}]
+            )
+
+            response, _, _ = self._run(monkeypatch, caplog, tmp, anonymous_sign_in)
+
+            assert response.status_code == 502
+            assert session_store.load_cookies()[0]["value"] == "still-good"
+
+
+_SHELL = "<html><body>%s</body></html>"
+
+# The two shapes AVEVA's identity provider might present, plus a rejection.
+_ONE_PAGE = _SHELL % (
+    "<h2>Sign in</h2><form method=post action=/submit>"
+    "<input id=userNameInput name=UserName type=text>"
+    "<input id=passwordInput name=Password type=password>"
+    "<label><input type=checkbox name=Kmsi> Keep me signed in</label>"
+    "<button type=submit>Sign in</button></form>"
+)
+_TWO_PAGE = _SHELL % (
+    "<h2>Sign in</h2><form method=post action=/password>"
+    "<input id=userNameInput name=UserName type=email>"
+    "<button type=submit>Next</button></form>"
+)
+_PASSWORD_PAGE = _SHELL % (
+    "<h2>Enter password</h2><form method=post action=/submit>"
+    "<input id=passwordInput name=Password type=password>"
+    "<button type=submit>Sign in</button></form>"
+)
+# A search box sitting before the login form: picking the username field by
+# document order instead of by priority types the username into the wrong input.
+_SEARCH_FIRST = _SHELL % (
+    "<input type=text id=basic-url placeholder=Search>"
+    "<h2>Sign in</h2><form method=post action=/submit-checked>"
+    "<input id=userNameInput name=UserName type=text>"
+    "<input id=passwordInput name=Password type=password>"
+    "<button type=submit>Sign in</button></form>"
+)
+_REJECTED = _SHELL % (
+    '<h2>Sign in</h2><div id=errorText>Incorrect user ID or password.</div>'
+    "<form method=post action=/rejected>"
+    "<input id=userNameInput name=UserName type=text>"
+    "<input id=passwordInput name=Password type=password>"
+    "<button type=submit>Sign in</button></form>"
+)
+
+
+@pytest.fixture(scope="module")
+def portal():
+    """A mock identity provider on a real port, for a real browser."""
+    pytest.importorskip("playwright")
+    import socket
+    import threading
+
+    import uvicorn
+    from starlette.applications import Starlette
+    from starlette.responses import HTMLResponse, RedirectResponse
+    from starlette.routing import Route
+
+    from pi_kb_mcp.session_store import SESSION_COOKIE
+
+    async def one_page(request):
+        return HTMLResponse(_ONE_PAGE)
+
+    async def two_page(request):
+        return HTMLResponse(_TWO_PAGE)
+
+    async def password_page(request):
+        await request.form()
+        return HTMLResponse(_PASSWORD_PAGE)
+
+    async def search_first(request):
+        return HTMLResponse(_SEARCH_FIRST)
+
+    async def submit_checked(request):
+        form = await request.form()
+        if not str(form.get("UserName") or "").strip():
+            return HTMLResponse(_SHELL % "<h2>Username went to the wrong field</h2>")
+        return await submit(request)
+
+    async def rejected_page(request):
+        return HTMLResponse(_REJECTED)
+
+    async def rejected_submit(request):
+        await request.form()
+        return HTMLResponse(_REJECTED)
+
+    async def submit(request):
+        form = await request.form()
+        response = RedirectResponse("/home", status_code=302)
+        response.set_cookie(SESSION_COOKIE, "session-xyz", httponly=True, path="/")
+        response.set_cookie("_ga", "analytics", path="/")
+        response.set_cookie("kmsi", "1" if "Kmsi" in form else "0", path="/")
+        return response
+
+    async def home(request):
+        return HTMLResponse(_SHELL % "<h1>Portal home</h1>")
+
+    app = Starlette(routes=[
+        Route("/one-page", one_page),
+        Route("/two-page", two_page),
+        Route("/password", password_page, methods=["POST"]),
+        Route("/search-first", search_first),
+        Route("/rejected-page", rejected_page),
+        Route("/rejected", rejected_submit, methods=["POST"]),
+        Route("/submit", submit, methods=["POST"]),
+        Route("/submit-checked", submit_checked, methods=["POST"]),
+        Route("/home", home),
+    ])
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    server = uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    )
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+    thread.start()
+    for _ in range(100):
+        if server.started:
+            break
+        time.sleep(0.05)
+    yield f"http://127.0.0.1:{port}"
+    server.should_exit = True
+    thread.join(timeout=10)
+
+
+class TestPortalLoginDrivesTheForm:
+    """Exercises the real browser code against a mock identity provider.
+
+    Skipped unless the 'serve' extra is installed. Form-driving is the most
+    fragile part of Mode B \u2014 it depends on markup this project does not own \u2014
+    so it is worth testing both shapes AVEVA might present rather than betting
+    on one.
+    """
+
+    def _sign_in(self, portal, path, user="probe@example.com", timeout_ms=20_000):
+        from pi_kb_mcp import portal_login
+
+        original = portal_login.HOME
+        portal_login.HOME = portal + path
+        try:
+            return asyncio.run(
+                portal_login.sign_in(user, SENTINEL_PW, timeout_ms=timeout_ms)
+            )
+        finally:
+            portal_login.HOME = original
+
+    def test_one_page_form(self, portal):
+        """Classic ADFS: username, password and 'keep me signed in' together."""
+        from pi_kb_mcp.session_store import SESSION_COOKIE
+
+        cookies = {c["name"]: c["value"] for c in self._sign_in(portal, "/one-page")}
+        assert SESSION_COOKIE in cookies
+        assert "_ga" not in cookies, "analytics cookies must not be persisted"
+        assert cookies.get("kmsi") == "1", "'keep me signed in' lengthens the session"
+
+    def test_two_page_form(self, portal):
+        """The other shape: username first, password on the page that follows."""
+        from pi_kb_mcp.session_store import SESSION_COOKIE
+
+        cookies = {c["name"]: c["value"] for c in self._sign_in(portal, "/two-page")}
+        assert SESSION_COOKIE in cookies
+
+    def test_a_search_box_before_the_form_is_not_mistaken_for_the_username(
+        self, portal
+    ):
+        """Fields are chosen by priority, not by position in the document."""
+        from pi_kb_mcp.session_store import SESSION_COOKIE
+
+        cookies = {c["name"]: c["value"] for c in self._sign_in(portal, "/search-first")}
+        assert SESSION_COOKIE in cookies
+
+    def test_rejected_credentials_report_avevas_own_error(self, portal):
+        from pi_kb_mcp import portal_login
+
+        with pytest.raises(portal_login.LoginError) as caught:
+            self._sign_in(portal, "/rejected-page", timeout_ms=6_000)
+        message = str(caught.value)
+        assert "Incorrect user ID or password" in message
+        assert SENTINEL_PW not in message
+
+    def test_a_field_that_blocks_submission_says_so(self, portal):
+        """Otherwise this is indistinguishable from AVEVA changing their markup."""
+        from pi_kb_mcp import portal_login
+
+        with pytest.raises(portal_login.LoginError) as caught:
+            self._sign_in(portal, "/two-page", user="not-an-email", timeout_ms=6_000)
+        assert "username field reports" in str(caught.value)

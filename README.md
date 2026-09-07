@@ -39,8 +39,11 @@ uv run pi-kb-mcp login
 ```
 
 `pi-kb-mcp login` opens a window on **AVEVA's own sign-in page**. Your password is
-never seen, handled or stored by this tool — it is typed into AVEVA's page. Only the
-resulting session token is cached, at `~/.config/pi-kb-mcp/session.json` (mode 0600).
+never seen, handled or stored by this command — it is typed into AVEVA's page. Only
+the resulting session token is cached, at `~/.config/pi-kb-mcp/session.json` (mode 0600).
+
+(The optional Mode B phone login below is the one exception in this project, and it
+says so plainly.)
 
 Sessions last about 8 hours; re-run `pi-kb-mcp login` when a tool tells you to.
 
@@ -69,8 +72,8 @@ The steps above are all you need on a laptop. If you also want to reach the KB
 from your phone, `pi-kb-mcp serve` runs a **private, single-user** HTTP server
 you host yourself.
 
-It holds exactly one AVEVA session — yours. It never asks a caller to sign in to
-AVEVA and has no code path that accepts anyone else's AVEVA credentials.
+It holds exactly one AVEVA session — yours. Signing in is gated behind the shared
+secret, so it never asks an unauthenticated caller for anything.
 
 ```bash
 python -c 'import secrets; print(secrets.token_urlsafe(32))'   # your secret
@@ -89,9 +92,36 @@ with header `Authorization: Bearer <secret>`.
 **How long it lasts.** The bearer token AVEVA issues lives 8 hours, so the server
 re-mints one itself: it stores your portal cookies and boots the portal in headless
 Chromium to obtain a fresh token — the token issuer cannot be called directly (see
-[NOTES.md](NOTES.md)). You only sign in again when the *cookies* expire, which is
-typically days rather than hours, but AVEVA controls that and it is not guaranteed.
-When they do expire, tools return a message telling you to run `login --push` again.
+[NOTES.md](NOTES.md)). Booting the real app also rolls the session cookie forward,
+which the server keeps, so the session extends itself for as long as the server
+keeps refreshing. AVEVA decides whether that expiry slides or is absolute, so this
+is not a guarantee of forever.
+
+**When it does lapse**, you no longer need a laptop. Open `https://kb.example.com/login`
+on your phone, enter the shared secret and your AVEVA username and password, and the
+server signs itself back in and stores the new cookies.
+
+### What the login page does with your credentials
+
+They are used once, to drive AVEVA's own sign-in form in a headless browser, and
+then dropped. They are never written to disk, never logged, never put in a URL and
+never echoed back — a test pushes a sentinel password through the handler and fails
+if it turns up in the cookie store, the logs or the response.
+
+Two things it would be dishonest not to say:
+
+- **Your password passes through this server**, which is not true of `pi-kb-mcp login`
+  on a laptop. It is not stored, but Python cannot guarantee a string is scrubbed
+  from memory, so it lingers in the process until that memory is reused. If you would
+  rather that never happen, don't use this page — `login --push` from a laptop still works.
+- **If you front this with a tunnel that terminates TLS** (Cloudflare does), your
+  password is decrypted at that edge. You already trust it with your bearer secret
+  and every KB query; an account password is a bigger thing to hand over. Decide that
+  deliberately.
+
+A failed sign-in leaves your existing session untouched, and reports which page AVEVA
+actually returned — so a changed form or a wrong password says so, instead of failing
+silently.
 
 ### Read this before hosting it
 
@@ -111,7 +141,9 @@ When they do expire, tools return a message telling you to run `login --push` ag
 The server process reads a token file and talks to AVEVA. That's all. It never
 touches your browser's cookie store or keychain, has no telemetry, and sends
 nothing anywhere except `softwaresupportsp.aveva.com` and
-`services.softwaresupport.aveva.com`.
+`services.softwaresupport.aveva.com`. If you use the Mode B login page, the
+credentials you type there go to AVEVA's sign-in form and nowhere else, and are
+not retained afterwards.
 
 Don't share your session token. The default stdio server is not networked at all;
 if you enable the optional phone access above, keep its URL and secret private —

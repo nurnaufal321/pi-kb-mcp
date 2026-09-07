@@ -21,18 +21,20 @@ import sys
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, Response
 
 from mcp.server.transport_security import TransportSecuritySettings
 
 from .server import mcp
-from .session_store import relevant, save_cookies
+from .session_store import SESSION_COOKIE, relevant, save_cookies
 
 log = logging.getLogger(__name__)
 
 SECRET_ENV = "PI_KB_MCP_SECRET"
 HOSTS_ENV = "PI_KB_MCP_ALLOWED_HOSTS"
 MIN_SECRET_LEN = 24
+
+UNAUTHENTICATED = {"/health"}
 
 
 def _secret() -> str:
@@ -61,7 +63,13 @@ class RequireSecret(BaseHTTPMiddleware):
         self._secret = secret
 
     async def dispatch(self, request: Request, call_next):
-        if request.url.path == "/health":
+        if request.url.path in UNAUTHENTICATED:
+            return await call_next(request)
+        # The sign-in form itself is static HTML holding no secrets, and a phone
+        # browser cannot set an Authorization header on a plain navigation. The
+        # POST that submits it carries the secret and is checked like everything
+        # else, so opening the page grants nothing.
+        if request.url.path == "/login" and request.method == "GET":
             return await call_next(request)
         # compare_digest to keep the check constant-time.
         if not hmac.compare_digest(_presented(request), self._secret):
@@ -100,6 +108,132 @@ async def push_session(request: Request) -> Response:
     return JSONResponse({"status": "stored", "cookies": len(kept)})
 
 
+LOGIN_PAGE = """<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in \u2014 pi-kb-mcp</title>
+<style>
+  :root { color-scheme: light dark; --fg:#111; --bg:#fff; --mut:#666; --line:#ccc; --err:#b00020; --ok:#0a6; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg:#eee; --bg:#151515; --mut:#aaa; --line:#444; --err:#ff6b7f; --ok:#4ade80; }
+  }
+  body { margin:0; padding:1.5rem; font:16px/1.5 system-ui,-apple-system,sans-serif;
+         color:var(--fg); background:var(--bg); }
+  main { max-width:26rem; margin:0 auto; }
+  h1 { font-size:1.25rem; margin:0 0 .25rem; }
+  p.sub { color:var(--mut); margin:0 0 1.5rem; font-size:.875rem; }
+  label { display:block; margin:1rem 0 .25rem; font-weight:600; font-size:.875rem; }
+  input { width:100%; box-sizing:border-box; padding:.75rem; font-size:16px;
+          border:1px solid var(--line); border-radius:.5rem;
+          background:var(--bg); color:var(--fg); }
+  button { width:100%; margin-top:1.5rem; padding:.85rem; font-size:1rem; font-weight:600;
+           border:0; border-radius:.5rem; background:var(--fg); color:var(--bg); }
+  button[disabled] { opacity:.5; }
+  #msg { margin-top:1rem; font-size:.875rem; white-space:pre-wrap; word-wrap:break-word; }
+  .err { color:var(--err); } .ok { color:var(--ok); }
+  footer { margin-top:2rem; color:var(--mut); font-size:.75rem; }
+</style></head><body><main>
+<h1>Refresh AVEVA session</h1>
+<p class="sub">Signs this server back in to the AVEVA support portal.</p>
+<form id="f">
+  <label for="s">Server secret</label>
+  <input id="s" type="password" autocomplete="off" required>
+  <label for="u">AVEVA username</label>
+  <input id="u" type="text" autocomplete="username" autocapitalize="none"
+         autocorrect="off" spellcheck="false" required>
+  <label for="p">AVEVA password</label>
+  <input id="p" type="password" autocomplete="current-password" required>
+  <button id="b" type="submit">Sign in</button>
+</form>
+<div id="msg"></div>
+<footer>Nothing typed here is stored. Your credentials are used once to obtain a
+session cookie and are never written to disk or logged.</footer>
+</main><script>
+const f=document.getElementById('f'), b=document.getElementById('b'), m=document.getElementById('msg');
+f.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  b.disabled = true; m.className=''; m.textContent = 'Signing in\u2026 this takes up to a minute.';
+  try {
+    const r = await fetch('/login', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + document.getElementById('s').value,
+                 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: document.getElementById('u').value,
+                             password: document.getElementById('p').value })
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) {
+      m.className='ok';
+      m.textContent = 'Signed in. Stored ' + d.cookies + ' session cookies. You can close this page.';
+      f.reset();
+    } else if (r.status === 401) {
+      m.className='err'; m.textContent = 'Wrong server secret.';
+    } else {
+      m.className='err'; m.textContent = d.error || ('Failed (HTTP ' + r.status + ').');
+    }
+  } catch (err) {
+    m.className='err'; m.textContent = 'Could not reach the server.';
+  }
+  b.disabled = false;
+});
+</script></body></html>
+"""
+
+
+async def login_page(request: Request) -> Response:
+    """The form itself. Static, secret-free, and safe to serve unauthenticated."""
+    return HTMLResponse(LOGIN_PAGE)
+
+
+async def sign_in(request: Request) -> Response:
+    """Sign in to AVEVA with credentials supplied from the phone.
+
+    The payload is read, used once, and dropped: never logged, never written to
+    disk, never echoed back \u2014 including in error responses, which describe the
+    page AVEVA returned rather than anything that was typed.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"error": "expected JSON"}, status_code=400)
+
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "expected a JSON object"}, status_code=400)
+
+    username = str(payload.get("username") or "").strip()
+    password = str(payload.get("password") or "")
+    if not username or not password:
+        return JSONResponse(
+            {"error": "username and password are both required"}, status_code=400
+        )
+
+    from .portal_login import LoginError, sign_in as portal_sign_in
+
+    try:
+        cookies = await portal_sign_in(username, password)
+    except LoginError as exc:
+        # str(exc) describes the page reached, never the credentials.
+        log.warning("portal sign-in did not complete")
+        return JSONResponse({"error": str(exc)}, status_code=502)
+    finally:
+        # Best-effort: drops this function's references. Python cannot guarantee
+        # the bytes leave memory — see the note in portal_login.
+        password = payload = None
+
+    # Belt and braces: sign_in only returns on success, but a jar without the
+    # session cookie must never replace a working one.
+    if not any(c.get("name") == SESSION_COOKIE for c in cookies):
+        return JSONResponse(
+            {"error": "sign-in returned no session cookie; kept the existing session"},
+            status_code=502,
+        )
+
+    save_cookies(cookies)
+    log.info("stored a session from an interactive sign-in (%d cookies)", len(cookies))
+    return JSONResponse({"status": "stored", "cookies": len(cookies)})
+
+
 def _transport_security() -> TransportSecuritySettings:
     """Decide how the MCP transport treats the Host header.
 
@@ -134,6 +268,8 @@ def build_app() -> Starlette:
     app = mcp.streamable_http_app(transport_security=_transport_security())
     app.add_route("/health", health, methods=["GET"])
     app.add_route("/session", push_session, methods=["POST"])
+    app.add_route("/login", login_page, methods=["GET"])
+    app.add_route("/login", sign_in, methods=["POST"])
     app.add_middleware(RequireSecret, secret=secret)
     return app
 

@@ -16,6 +16,11 @@ STORE_PATH = Path(
     or Path.home() / ".config" / "pi-kb-mcp" / "cookies.json"
 )
 
+# The cookie that actually carries the portal session. Observed, not inferred —
+# see NOTES.md. Code that overwrites the store checks for it, because a cookie
+# set without it is an anonymous one and writing it would strand the server.
+SESSION_COOKIE = ".AspNetCore.Cookies"
+
 # Analytics and consent cookies, dropped so we persist as little as possible.
 # This is a denylist rather than an allowlist on purpose: an allowlist of
 # guessed session-cookie names silently discarded everything and left the

@@ -45,6 +45,28 @@ endpoint directly.
 Consequence: capture the bearer by **observing the app's own boot request** rather than
 replicating the mint. See README for which deployment modes this supports.
 
+### Sign-in shape
+
+**No MFA on the support portal as of 2026-09-07** — confirmed by the account holder,
+who signs in with username and password only. This is why `portal_login.py` fills the
+form directly rather than relaying a browser to the user's phone: with no interactive
+challenge to clear, driving the form is enough.
+
+Worth re-checking if sign-in ever starts failing. AVEVA documents MFA for CONNECT
+(non-federated users, TOTP, with some accounts enforcing it), so the support portal
+gaining it later would not be surprising. If that happens, `/login` reports the page
+it landed on — an MFA prompt will name itself in that message rather than failing
+silently.
+
+The identity provider's exact form is *not* recorded here: this environment cannot
+reach `aveva.com`, so it has never been observed. `portal_login.py` therefore handles
+both plausible shapes — username and password on one page (classic ADFS), and username
+then password across two — and locates fields by type rather than by id.
+
+Cookies are rolled forward on every successful token mint, since booting the SPA
+returns a freshened `.AspNetCore.Cookies`. Whether that expiry slides or is absolute
+is AVEVA's to decide and has not been measured over a long enough window.
+
 ## Search
 
 `POST {B}/Search`
