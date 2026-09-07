@@ -136,37 +136,47 @@ LOGIN_PAGE = """<!doctype html>
 </style></head><body><main>
 <h1>Refresh AVEVA session</h1>
 <p class="sub">Signs this server back in to the AVEVA support portal.</p>
-<form id="f">
+<!-- Two separate <form>s, deliberately: the secret is a standing credential
+     you already use on every MCP request, and should behave like any other
+     saved password. The AVEVA fields are the opposite -- never remembered,
+     matching the "used once and dropped" promise below -- so they sit in
+     their own autocomplete="off" form the browser cannot fold in with the
+     first one. Submission is handled in JS either way; the <form> tags exist
+     only to give the browser's password manager an unambiguous boundary. -->
+<form id="secretForm" autocomplete="on">
   <label for="s">Server secret</label>
-  <input id="s" type="password" autocomplete="off" required>
+  <input id="s" name="secret" type="password" autocomplete="current-password" required>
+</form>
+<form id="avevaForm" autocomplete="off">
   <label for="u">AVEVA username</label>
-  <input id="u" type="text" autocomplete="username" autocapitalize="none"
+  <input id="u" name="username" type="text" autocomplete="off" autocapitalize="none"
          autocorrect="off" spellcheck="false" required>
   <label for="p">AVEVA password</label>
-  <input id="p" type="password" autocomplete="current-password" required>
-  <button id="b" type="submit">Sign in</button>
+  <input id="p" name="password" type="password" autocomplete="off" required>
 </form>
+<button id="b" type="button">Sign in</button>
 <div id="msg"></div>
-<footer>Nothing typed here is stored. Your credentials are used once to obtain a
-session cookie and are never written to disk or logged.</footer>
+<footer>Your server secret is your browser's to remember, like any saved password.
+Your AVEVA username and password are not: they are used once to obtain a session
+cookie and are never written to disk, logged, or saved by this page or your
+browser.</footer>
 </main><script>
-const f=document.getElementById('f'), b=document.getElementById('b'), m=document.getElementById('msg');
-f.addEventListener('submit', async (e) => {
-  e.preventDefault();
+const b=document.getElementById('b'), m=document.getElementById('msg');
+const s=document.getElementById('s'), u=document.getElementById('u'), p=document.getElementById('p');
+
+async function submit() {
   b.disabled = true; m.className=''; m.textContent = 'Signing in\u2026 this takes up to a minute.';
   try {
     const r = await fetch('/login', {
       method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + document.getElementById('s').value,
-                 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: document.getElementById('u').value,
-                             password: document.getElementById('p').value })
+      headers: { 'Authorization': 'Bearer ' + s.value, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: u.value, password: p.value })
     });
     const d = await r.json().catch(() => ({}));
     if (r.ok) {
       m.className='ok';
       m.textContent = 'Signed in. Stored ' + d.cookies + ' session cookies. You can close this page.';
-      f.reset();
+      u.value = ''; p.value = '';   // the secret is left in place on purpose
     } else if (r.status === 401) {
       m.className='err'; m.textContent = 'Wrong server secret.';
     } else {
@@ -176,7 +186,12 @@ f.addEventListener('submit', async (e) => {
     m.className='err'; m.textContent = 'Could not reach the server.';
   }
   b.disabled = false;
-});
+}
+
+b.addEventListener('click', submit);
+for (const field of [s, u, p]) {
+  field.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
+}
 </script></body></html>
 """
 
