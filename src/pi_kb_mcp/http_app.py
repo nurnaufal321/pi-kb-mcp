@@ -174,6 +174,21 @@ async function submit() {
     });
     const d = await r.json().catch(() => ({}));
     if (r.ok) {
+      // A JS-driven fetch() login gives most browsers no signal to offer
+      // saving a password -- there is no real <form> submit event for them to
+      // key off. navigator.credentials.store() is the explicit, supported
+      // replacement for exactly this case (see web.dev's sign-in-form-best
+      // -practices guidance); without it this prompt was never going to
+      // appear, on this page or any other JS-driven login. Best-effort: some
+      // browsers (notably Safari/iOS) do not implement it, so failures here
+      // are silently ignored rather than surfaced as an error.
+      if (window.PasswordCredential && navigator.credentials && navigator.credentials.store) {
+        try {
+          await navigator.credentials.store(
+            new PasswordCredential({ id: 'secret', name: 'pi-kb-mcp server secret', password: s.value })
+          );
+        } catch (e) { /* unsupported or declined -- not fatal */ }
+      }
       m.className='ok';
       m.textContent = 'Signed in. Stored ' + d.cookies + ' session cookies. You can close this page.';
       u.value = ''; p.value = '';   // the secret is left in place on purpose
