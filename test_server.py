@@ -280,6 +280,31 @@ class TestPhoneLoginSurface:
     def test_form_carries_no_secret(self):
         assert SECRET not in self.client().get("/login").text
 
+    def test_the_secret_field_is_saveable_by_a_password_manager(self):
+        """The secret is a standing credential, same as any other saved login --
+        the annoyance of retyping it every time was a bug, not a safety feature."""
+        html = self.client().get("/login").text
+        assert 'id="s"' in html
+        assert 'autocomplete="off"' not in html.split('id="s"')[1].split(">")[0]
+
+    def test_aveva_fields_refuse_to_be_remembered(self):
+        """The opposite property, for the opposite reason: these must never be
+        offered to a password manager, matching the 'used once, dropped'
+        promise in the README and the footer text on this very page."""
+        html = self.client().get("/login").text
+        for field_id in ("u", "p"):
+            attrs = html.split(f'id="{field_id}"')[1].split(">")[0]
+            assert 'autocomplete="off"' in attrs, f"#{field_id} must not be autofillable"
+
+    def test_secret_and_aveva_fields_sit_in_separate_forms(self):
+        """A password manager that sees one <form> with two password fields
+        tends to treat it as a change-password form and mismatches which
+        credential goes where. Splitting them avoids that entirely."""
+        html = self.client().get("/login").text
+        secret_form = html[html.index('id="secretForm"'):html.index('id="avevaForm"')]
+        assert 'id="s"' in secret_form
+        assert 'id="u"' not in secret_form and 'id="p"' not in secret_form
+
     def test_posting_credentials_requires_the_secret(self):
         r = self.client().post("/login", json={"username": "u", "password": "p"})
         assert r.status_code == 401
